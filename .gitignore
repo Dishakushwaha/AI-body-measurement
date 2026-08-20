@@ -1,0 +1,16 @@
+# Dataset images
+data/images/
+train/
+testA/
+testB/
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+.venv/
+
+# Environment variables
+.env
