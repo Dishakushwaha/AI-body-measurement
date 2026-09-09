@@ -1,11 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
-from pydantic import BaseModel
-
 import joblib
 import cv2
 import numpy as np
 
 from fashion_recommendation import generate_fashion_recommendations
+from models import BodyMeasurementResult
+from pydantic import BaseModel
 
 from auth import (
     hash_password,
@@ -14,34 +14,21 @@ from auth import (
     get_current_user
 )
 
-from models import BodyMeasurementResult
 
+# ==============================
+# FASTAPI APP
+# ==============================
 
 app = FastAPI(
-    title="AI Body Measurement & Fashion Recommendation API",
-    description="AI-based body measurement and fashion recommendation system",
+    title="AI Body Measurement & Fashion API",
+    description="AI-powered API for body measurement estimation and fashion recommendations",
     version="1.0.0"
 )
 
 
-# ============================================================
-# LOAD MODEL
-# ============================================================
-
-MODEL_PATH = "body_measurement_model.pkl"
-
-try:
-    model = joblib.load(MODEL_PATH)
-    print("✅ Body measurement model loaded successfully!")
-    print("✅ Model expects:", model.n_features_in_, "features")
-except Exception as e:
-    print("❌ Error loading model:", e)
-    model = None
-
-
-# ============================================================
+# ==============================
 # TEMPORARY USER STORAGE
-# ============================================================
+# ==============================
 
 users_db = {}
 
@@ -56,9 +43,9 @@ class UserLogin(BaseModel):
     password: str
 
 
-# ============================================================
+# ==============================
 # REGISTER
-# ============================================================
+# ==============================
 
 @app.post("/register")
 def register(user: UserRegister):
@@ -79,9 +66,9 @@ def register(user: UserRegister):
     }
 
 
-# ============================================================
+# ==============================
 # LOGIN
-# ============================================================
+# ==============================
 
 @app.post("/login")
 def login(user: UserLogin):
@@ -94,7 +81,10 @@ def login(user: UserLogin):
 
     stored_password = users_db[user.username]
 
-    if not verify_password(user.password, stored_password):
+    if not verify_password(
+        user.password,
+        stored_password
+    ):
         raise HTTPException(
             status_code=401,
             detail="Invalid username or password"
@@ -111,115 +101,38 @@ def login(user: UserLogin):
     }
 
 
-# ============================================================
-# FEATURE EXTRACTION
-# ============================================================
+# ==============================
+# LOAD MODEL
+# ==============================
 
-def extract_features(image_bytes):
+MODEL_PATH = "body_measurement_model.pkl"
 
-    image_array = np.frombuffer(image_bytes, np.uint8)
+try:
 
-    image = cv2.imdecode(
-        image_array,
-        cv2.IMREAD_GRAYSCALE
+    model = joblib.load(MODEL_PATH)
+
+    print("Body measurement model loaded successfully!")
+    print(
+        "Model expects:",
+        model.n_features_in_,
+        "features"
     )
 
-    if image is None:
-        raise ValueError("Unable to read image")
+except Exception as e:
 
-    # Threshold
-    _, binary = cv2.threshold(
-        image,
-        127,
-        255,
-        cv2.THRESH_BINARY
+    model = None
+
+    print(
+        "Model loading failed:",
+        e
     )
 
-    points = cv2.findNonZero(binary)
 
-    if points is None:
-        raise ValueError("No body/silhouette detected in image")
-
-    x, y, width, height = cv2.boundingRect(points)
-
-    silhouette_area = cv2.countNonZero(binary)
-
-    if height == 0:
-        raise ValueError("Invalid body height detected")
-
-    area_height_ratio = silhouette_area / height
-
-    width_height_ratio = width / height
-
-    # --------------------------------------------------------
-    # Width extraction at different body positions
-    # --------------------------------------------------------
-
-    relative_positions = [
-        0.20,
-        0.35,
-        0.50,
-        0.65,
-        0.78
-    ]
-
-    widths = []
-
-    for position in relative_positions:
-
-        row = int(y + height * position)
-
-        if row >= binary.shape[0]:
-            row = binary.shape[0] - 1
-
-        row_pixels = np.where(
-            binary[row] > 0
-        )[0]
-
-        if len(row_pixels) > 0:
-            row_width = row_pixels.max() - row_pixels.min() + 1
-        else:
-            row_width = width
-
-        widths.append(row_width)
-
-    shoulder_width_px = widths[0]
-    chest_width_px = widths[1]
-    waist_width_px = widths[2]
-    hip_width_px = widths[3]
-    thigh_width_px = widths[4]
-
-    # Ratios
-    shoulder_body_ratio = shoulder_width_px / height
-    chest_body_ratio = chest_width_px / height
-    waist_body_ratio = waist_width_px / height
-
-    # --------------------------------------------------------
-    # EXACT 11 FEATURES EXPECTED BY MODEL
-    # --------------------------------------------------------
-
-    features = np.array([
-        height,
-        silhouette_area,
-        area_height_ratio,
-        shoulder_width_px,
-        chest_width_px,
-        waist_width_px,
-        hip_width_px,
-        thigh_width_px,
-        shoulder_body_ratio,
-        chest_body_ratio,
-        waist_body_ratio
-    ]).reshape(1, -1)
-
-    return features
-
-
-# ============================================================
+# ==============================
 # MEASUREMENT NAMES
-# ============================================================
+# ==============================
 
-measurement_names = [
+MEASUREMENT_NAMES = [
     "ankle",
     "arm-length",
     "bicep",
@@ -237,45 +150,306 @@ measurement_names = [
 ]
 
 
-# ============================================================
-# PREDICT MEASUREMENTS
-# ============================================================
+# ==============================
+# ROOT ENDPOINT
+# ==============================
+
+@app.get("/")
+def home():
+
+    return {
+        "message": "AI Body Measurement & Fashion API is running!",
+        "status": "success",
+        "docs": "/docs"
+    }
+
+
+# ==============================
+# IMAGE FEATURE EXTRACTION
+# ==============================
+
+def extract_image_features(image_bytes):
+
+    image_array = np.frombuffer(
+        image_bytes,
+        np.uint8
+    )
+
+    image = cv2.imdecode(
+        image_array,
+        cv2.IMREAD_GRAYSCALE
+    )
+
+    if image is None:
+
+        raise ValueError(
+            "Unable to read image"
+        )
+
+    _, binary = cv2.threshold(
+        image,
+        127,
+        255,
+        cv2.THRESH_BINARY
+    )
+
+    points = cv2.findNonZero(binary)
+
+    if points is None:
+
+        raise ValueError(
+            "No body/silhouette detected in image"
+        )
+
+    x, y, width, height = cv2.boundingRect(
+        points
+    )
+
+    if height == 0:
+
+        raise ValueError(
+            "Invalid body height detected"
+        )
+
+    silhouette_area = cv2.countNonZero(
+        binary
+    )
+
+    def get_width_at_height(relative_position):
+
+        row = int(
+            y + height * relative_position
+        )
+
+        if row >= binary.shape[0]:
+
+            return 0.0
+
+        row_pixels = np.where(
+            binary[row] > 0
+        )[0]
+
+        if len(row_pixels) == 0:
+
+            return 0.0
+
+        return float(
+            row_pixels[-1]
+            - row_pixels[0]
+            + 1
+        )
+
+    shoulder_width = get_width_at_height(0.20)
+
+    chest_width = get_width_at_height(0.35)
+
+    waist_width = get_width_at_height(0.50)
+
+    hip_width = get_width_at_height(0.65)
+
+    thigh_width = get_width_at_height(0.78)
+
+
+    # ==============================
+    # FALLBACK VALUES
+    # ==============================
+
+    if shoulder_width == 0:
+        shoulder_width = float(width)
+
+    if chest_width == 0:
+        chest_width = float(width)
+
+    if waist_width == 0:
+        waist_width = float(width)
+
+    if hip_width == 0:
+        hip_width = float(width)
+
+    if thigh_width == 0:
+        thigh_width = float(width)
+
+
+    # ==============================
+    # RATIOS
+    # ==============================
+
+    area_height_ratio = (
+        silhouette_area / height
+    )
+
+    shoulder_body_ratio = (
+        shoulder_width / height
+    )
+
+    chest_body_ratio = (
+        chest_width / height
+    )
+
+    waist_body_ratio = (
+        waist_width / height
+    )
+
+
+    # ==============================
+    # EXACT 11 FEATURES
+    # ==============================
+
+    features = np.array(
+        [[
+            height,
+            silhouette_area,
+            area_height_ratio,
+            shoulder_width,
+            chest_width,
+            waist_width,
+            hip_width,
+            thigh_width,
+            shoulder_body_ratio,
+            chest_body_ratio,
+            waist_body_ratio
+        ]],
+        dtype=np.float32
+    )
+
+    print("\n================================")
+    print("IMAGE FEATURES")
+    print("================================")
+
+    print(
+        "body_height_px:",
+        height
+    )
+
+    print(
+        "silhouette_area_px:",
+        silhouette_area
+    )
+
+    print(
+        "area_height_ratio:",
+        area_height_ratio
+    )
+
+    print(
+        "shoulder_width_px:",
+        shoulder_width
+    )
+
+    print(
+        "chest_width_px:",
+        chest_width
+    )
+
+    print(
+        "waist_width_px:",
+        waist_width
+    )
+
+    print(
+        "hip_width_px:",
+        hip_width
+    )
+
+    print(
+        "thigh_width_px:",
+        thigh_width
+    )
+
+    print(
+        "shoulder_body_ratio:",
+        shoulder_body_ratio
+    )
+
+    print(
+        "chest_body_ratio:",
+        chest_body_ratio
+    )
+
+    print(
+        "waist_body_ratio:",
+        waist_body_ratio
+    )
+
+    print(
+        "Feature shape:",
+        features.shape
+    )
+
+    print("================================\n")
+
+    return features
+
+
+# ==============================
+# PREDICT BODY MEASUREMENTS
+# ==============================
 
 @app.post("/predict-measurements")
-def predict_measurements(
+async def predict_measurements(
     file: UploadFile = File(...),
     current_user: str = Depends(get_current_user)
 ):
 
     if model is None:
+
         raise HTTPException(
             status_code=500,
             detail="Measurement model is not loaded"
         )
 
+    allowed_types = [
+        "image/jpeg",
+        "image/png",
+        "image/jpg"
+    ]
+
+    if file.content_type not in allowed_types:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload a JPG or PNG image"
+        )
+
     try:
 
-        image_bytes = file.file.read()
+        image_bytes = await file.read()
 
         if not image_bytes:
+
             raise HTTPException(
                 status_code=400,
-                detail="Empty image file"
+                detail="Uploaded image is empty"
             )
 
-        features = extract_features(image_bytes)
+        features = extract_image_features(
+            image_bytes
+        )
 
-        prediction = model.predict(features)
+        if features.shape[1] != model.n_features_in_:
 
-        prediction = prediction[0]
-
-        measurements = {
-            name: round(float(value), 2)
-            for name, value in zip(
-                measurement_names,
-                prediction
+            raise ValueError(
+                f"Feature mismatch: API generated "
+                f"{features.shape[1]} features, "
+                f"but model expects "
+                f"{model.n_features_in_} features."
             )
-        }
+
+        predictions = model.predict(
+            features
+        )[0]
+
+        measurements = {}
+
+        for name, value in zip(
+            MEASUREMENT_NAMES,
+            predictions
+        ):
+
+            measurements[name] = round(
+                float(value),
+                2
+            )
 
         result = BodyMeasurementResult(
             filename=file.filename,
@@ -286,67 +460,108 @@ def predict_measurements(
             "status": "success",
             "filename": result.filename,
             "user": current_user,
-            "features_used": int(features.shape[1]),
+            "features_used": int(
+                features.shape[1]
+            ),
             "measurements": result.measurements
         }
 
     except HTTPException:
+
         raise
 
     except Exception as e:
+
+        print(
+            "Prediction error:",
+            str(e)
+        )
+
         raise HTTPException(
             status_code=500,
-            detail=f"Prediction error: {str(e)}"
+            detail=str(e)
         )
 
 
-# ============================================================
+# ==============================
 # FASHION RECOMMENDATIONS
-# ============================================================
+# ==============================
 
 @app.post("/fashion-recommendations")
-def fashion_recommendations(
+async def fashion_recommendations(
     file: UploadFile = File(...),
     current_user: str = Depends(get_current_user)
 ):
 
     if model is None:
+
         raise HTTPException(
             status_code=500,
             detail="Measurement model is not loaded"
         )
 
+    allowed_types = [
+        "image/jpeg",
+        "image/png",
+        "image/jpg"
+    ]
+
+    if file.content_type not in allowed_types:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload a JPG or PNG image"
+        )
+
     try:
 
-        image_bytes = file.file.read()
+        image_bytes = await file.read()
 
         if not image_bytes:
+
             raise HTTPException(
                 status_code=400,
-                detail="Empty image file"
+                detail="Uploaded image is empty"
             )
 
-        features = extract_features(image_bytes)
+        features = extract_image_features(
+            image_bytes
+        )
 
-        prediction = model.predict(features)
+        if features.shape[1] != model.n_features_in_:
 
-        prediction = prediction[0]
-
-        measurements = {
-            name: round(float(value), 2)
-            for name, value in zip(
-                measurement_names,
-                prediction
+            raise ValueError(
+                f"Feature mismatch: API generated "
+                f"{features.shape[1]} features, "
+                f"but model expects "
+                f"{model.n_features_in_} features."
             )
-        }
+
+        predictions = model.predict(
+            features
+        )[0]
+
+        measurements = {}
+
+        for name, value in zip(
+            MEASUREMENT_NAMES,
+            predictions
+        ):
+
+            measurements[name] = round(
+                float(value),
+                2
+            )
 
         result = BodyMeasurementResult(
             filename=file.filename,
             measurements=measurements
         )
 
-        recommendations = generate_fashion_recommendations(
-            result.measurements
+        recommendations = (
+            generate_fashion_recommendations(
+                result.measurements
+            )
         )
 
         return {
@@ -358,23 +573,17 @@ def fashion_recommendations(
         }
 
     except HTTPException:
+
         raise
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Recommendation error: {str(e)}"
+
+        print(
+            "Fashion recommendation error:",
+            str(e)
         )
 
-
-# ============================================================
-# ROOT
-# ============================================================
-
-@app.get("/")
-def root():
-
-    return {
-        "message": "AI Body Measurement & Fashion Recommendation API",
-        "status": "running"
-    }
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
